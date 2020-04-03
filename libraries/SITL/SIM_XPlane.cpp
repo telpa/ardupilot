@@ -95,7 +95,7 @@ void XPlane::select_data(uint64_t usel_mask, uint64_t sel_mask)
         printf("De-selecting %u data types 0x%llx\n", (unsigned)count, (unsigned long long)usel_mask);
     }
 }
-    
+
 /*
   receive data from X-Plane via UDP
 */
@@ -122,7 +122,7 @@ bool XPlane::receive_data(void)
         wait_time_ms = 10;
     }
     ssize_t len = socket_in.recv(pkt, sizeof(pkt), wait_time_ms);
-    
+
     if (len < pkt_len+5 || memcmp(pkt, "DATA", 4) != 0) {
         // not a data packet we understand
         goto failed;
@@ -137,7 +137,7 @@ bool XPlane::receive_data(void)
         connected = true;
         printf("Connected to %s:%u\n", xplane_ip, (unsigned)xplane_port);
     }
-    
+
     while (len >= pkt_len) {
         const float *data = (const float *)p;
         uint8_t code = p[0];
@@ -161,7 +161,7 @@ bool XPlane::receive_data(void)
             time_now_us = tnew;
             break;
         }
-            
+
         case LatLonAlt: {
             loc.lat = data[1] * 1e7;
             loc.lng = data[2] * 1e7;
@@ -186,7 +186,7 @@ bool XPlane::receive_data(void)
                 rcin[2] = data[4];
             }
             break;
-            
+
         case PitchRollHeading: {
             float roll, pitch, yaw;
             pitch = radians(data[1]);
@@ -265,7 +265,7 @@ bool XPlane::receive_data(void)
         case PropRPM:
             rpm[1] = data[1];
             break;
-            
+
         case Joystick2:
             break;
 
@@ -305,7 +305,7 @@ bool XPlane::receive_data(void)
 
     accel_earth = dcm * accel_body;
     accel_earth.z += GRAVITY_MSS;
-    
+
     // the position may slowly deviate due to float accuracy and longitude scaling
     if (loc.get_distance(location) > 4 || abs(loc.alt - location.alt)*0.01f > 2.0f) {
         printf("X-Plane home reset dist=%f alt=%.1f/%.1f\n",
@@ -332,7 +332,7 @@ bool XPlane::receive_data(void)
     report.data_count++;
     report.frame_count++;
     return true;
-        
+
 failed:
     if (AP_HAL::millis() - last_data_time_ms > 200) {
         // don't extrapolate beyond 0.2s
@@ -346,47 +346,29 @@ failed:
     time_now_us += frame_time_us;
 
     extrapolate_sensors(delta_time);
-    
+
     update_position();
     time_advance();
     update_mag_field_bf();
     report.frame_count++;
     return false;
 }
-    
+
 
 /*
   send data to X-Plane via UDP
 */
 void XPlane::send_data(const struct sitl_input &input)
 {
-    float aileron  = (input.servos[0]-1500)/500.0f;
-    float elevator = (input.servos[1]-1500)/500.0f;
-    float throttle = (input.servos[2]-1000)/1000.0;
-    float rudder   = (input.servos[3]-1500)/500.0f;
+    uint32_t now = AP_HAL::micros();
+    float dt = constrain_float((now - last_send_time_us) * 1.0e-6, 0.001, 0.1);
+    last_send_time_us = now;
     struct PACKED {
         uint8_t  marker[5] { 'D', 'A', 'T', 'A', '0' };
         uint32_t code;
         float    data[8];
     } d {};
 
-    if (input.servos[0] == 0) {
-        aileron = 0;
-    }
-    if (input.servos[1] == 0) {
-        elevator = 0;
-    }
-    if (input.servos[2] == 0) {
-        throttle = 0;
-    }
-    if (input.servos[3] == 0) {
-        rudder = 0;
-    }
-    
-    // we add the throttle_magic to the throttle value we send so we
-    // can detect when we get it back
-    throttle = ((uint32_t)(throttle * 1000)) * 1.0e-3f + throttle_magic;
-    
     uint8_t flap_chan;
     if (SRV_Channels::find_channel(SRV_Channel::k_flap, flap_chan) ||
         SRV_Channels::find_channel(SRV_Channel::k_flap_auto, flap_chan)) {
@@ -397,50 +379,30 @@ void XPlane::send_data(const struct sitl_input &input)
         }
     }
 
-    d.code = FlightCon;
-    d.data[0] = elevator;
-    d.data[1] = aileron;
-    d.data[2] = rudder;
-    d.data[4] = rudder;
-    socket_out.send(&d, sizeof(d));
+    /*
+     * Setup for the Water Glider
+     *
+     *                  CHANNELS
+     *  Horizontal stabiliser:
+     *    - sim/flightmodel2/wing/aileron1_deg[8]
+     *    - sim/flightmodel2/wing/aileron1_deg[9]
+     *  Vertical stabiliser:
+     *    - sim/flightmodel2/wing/rudder1_deg[10]
+     *
+     * */
 
-    if (!heli_frame) {
-        d.code = ThrottleCommand;
-        d.data[0] = throttle;
-        d.data[1] = throttle;
-        d.data[2] = throttle;
-        d.data[3] = throttle;
-        d.data[4] = 0;
-        socket_out.send(&d, sizeof(d));
-    } else {
-        // send chan3 as collective pitch, on scale from -10 to +10
-        float collective = 10*(input.servos[2]-1500)/500.0;
+    // Create two servos, one for each axis
+    // These return percentage deflection
+    float hori_stab = filtered_servo_angle(input, 0, dt);
+    float vert_stab = filtered_servo_angle(input, 1, dt);
 
-        // and send throttle from channel 8
-        throttle = (input.servos[7]-1000)/1000.0;
+    // Send the servo values (a percentage) to the DREFs
+    const float deflection_max = 45.0;
+    send_dref("sim/operation/override/override_control_surfaces", 1);
+    send_dref("sim/flightmodel2/wing/aileron1_deg[8]", hori_stab*deflection_max);
+    send_dref("sim/flightmodel2/wing/aileron1_deg[9]", hori_stab*deflection_max);
+    send_dref("sim/flightmodel2/wing/rudder1_deg[10]", vert_stab*deflection_max);
 
-        // allow for extra throttle outputs for special aircraft
-        float throttle2 = (input.servos[5]-1000)/1000.0;
-        float throttle3 = (input.servos[6]-1000)/1000.0;
-
-        d.code = PropPitch;
-        d.data[0] = collective;
-        d.data[1] = -rudder*15; // reverse sense of rudder, 15 degrees pitch range
-        d.data[2] = 0;
-        d.data[3] = 0;
-        d.data[4] = 0;
-        socket_out.send(&d, sizeof(d));
-
-        d.code = ThrottleCommand;
-        d.data[0] = throttle;
-        d.data[1] = throttle;
-        d.data[2] = throttle2;
-        d.data[3] = throttle3;
-        d.data[4] = 0;
-        socket_out.send(&d, sizeof(d));
-    }
-
-    throttle_sent = throttle;
 }
 
 
@@ -456,9 +418,9 @@ void XPlane::send_dref(const char *name, float value)
     } d {};
     d.value = value;
     strcpy(d.name, name);
-    socket_out.send(&d, sizeof(d));        
+    socket_out.send(&d, sizeof(d));
 }
-    
+
 /*
   update the XPlane simulation by one time step
  */
