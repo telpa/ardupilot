@@ -388,6 +388,7 @@ void XPlane::send_data(const struct sitl_input &input)
      *    - sim/flightmodel2/wing/aileron1_deg[9]
      *  Vertical stabiliser:
      *    - sim/flightmodel2/wing/rudder1_deg[10]
+     *    - sim/flightmodel2/wing/rudder1_deg[11]
      *
      * */
 
@@ -399,9 +400,10 @@ void XPlane::send_data(const struct sitl_input &input)
     // Send the servo values (a percentage) to the DREFs
     const float deflection_max = 45.0;
     send_dref("sim/operation/override/override_control_surfaces", 1);
-    send_dref("sim/flightmodel2/wing/aileron1_deg[8]", hori_stab*deflection_max);
-    send_dref("sim/flightmodel2/wing/aileron1_deg[9]", hori_stab*deflection_max);
-    send_dref("sim/flightmodel2/wing/rudder1_deg[10]", vert_stab*deflection_max);
+    send_dref("sim/flightmodel2/wing/aileron1_deg[8]", vert_stab*deflection_max);
+    send_dref("sim/flightmodel2/wing/aileron1_deg[9]", vert_stab*deflection_max);
+    send_dref("sim/flightmodel2/wing/rudder1_deg[10]", hori_stab*deflection_max);
+    send_dref("sim/flightmodel2/wing/rudder1_deg[11]", hori_stab*deflection_max);
 
 }
 
